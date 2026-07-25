@@ -4,7 +4,8 @@
 
 A GitHub Action that builds and pushes Docker images to Docker Hub and updates
 manifest files in a separate GitOps repository to trigger Kubernetes
-deployments. Modeled on [staffbase/gitops-github-action](https://github.com/staffbase/gitops-github-action).
+deployments. Modeled on [staffbase/gitops-github-action](https://github.com/staffbase/gitops-github-action)
+(bash), but implemented in **Go**.
 
 The action is operated by `ekko-github-bot[bot]` for all Git operations.
 
@@ -14,9 +15,27 @@ The action is operated by `ekko-github-bot[bot]` for all Git operations.
 
 ### Execution Model
 
-The action is a **composite action** written entirely in **shell scripts**. No
-Node.js runtime, no Docker container action — just bash called from `action.yml`
-steps. This keeps the action fast and dependency-light.
+The action is a **composite action** whose logic lives in a single Go CLI
+binary with subcommands. Docker build/push stays delegated to the official
+`docker/*` actions; the Go binary handles everything the bash scripts did:
+tag generation, GitOps repo updates, retagging, and architecture verification.
+
+The binary is invoked with `go run` from `action.yml` steps, using
+`actions/setup-go` with caching so compilation adds only a few seconds on a
+warm cache. Precompiled release binaries are a possible later optimization
+(see Out of Scope).
+
+Because composite steps run in the *caller's* workspace, all `go run`
+invocations must use `${{ github.action_path }}` as the working directory or
+module path.
+
+### Why Go (vs. the reference bash implementation)
+
+- Structured YAML editing with a real parser — no `yq` binary dependency
+- Registry operations (retag, platform inspection) via API calls with
+  `go-containerregistry` — no `docker pull` of full images
+- Table-driven unit tests instead of bats; one toolchain for lint + test
+- Typed input parsing and real error handling instead of `set -euo pipefail`
 
 ### Environment Routing
 
@@ -47,24 +66,32 @@ ekko-github-action/
 ├── README.md                       # Usage docs + examples
 ├── .gitignore
 ├── .editorconfig
-├── .shellcheckrc                   # ShellCheck config
-├── mise.toml                       # Dev tool versions (shellcheck, bats, yq)
-├── scripts/
-│   ├── generate-tags.sh            # Compute docker tag + push flag from git ref
-│   ├── update-gitops.sh            # Clone gitops repo, patch YAML, push
-│   ├── retag-image.sh              # Pull existing image, retag, push (no rebuild)
-│   ├── verify-architecture.sh      # Assert image platforms match requested ones
-│   └── lib/
-│       ├── common.sh               # require_env, log_info, log_error, set_output
-│       └── gitops-functions.sh     # clone_repo, update_file, process_file_updates
-├── tests/
-│   ├── generate-tags.bats
-│   ├── update-gitops.bats
-│   └── lib/
-│       └── common.bats
+├── .golangci.yml                   # golangci-lint config
+├── mise.toml                       # Dev tool versions (go, golangci-lint)
+├── go.mod
+├── go.sum
+├── cmd/
+│   └── ekko-action/
+│       └── main.go                 # Subcommand dispatch: generate-tags, update-gitops, retag-image, verify-architecture
+├── internal/
+│   ├── ghaction/                   # Action I/O: inputs, GITHUB_OUTPUT, log annotations
+│   │   ├── ghaction.go
+│   │   └── ghaction_test.go
+│   ├── tags/                       # Compute docker tag + push flag from git ref
+│   │   ├── tags.go
+│   │   └── tags_test.go
+│   ├── gitops/                     # Clone gitops repo, patch YAML, commit, push
+│   │   ├── clone.go                # git via os/exec, token via http.extraheader
+│   │   ├── patch.go                # yaml.v3 node-level image field update
+│   │   ├── gitops.go               # process file updates: route → patch → commit → push
+│   │   └── *_test.go
+│   └── registry/                   # go-containerregistry based operations
+│       ├── retag.go                # crane.Copy: retag without pulling image
+│       ├── verify.go               # assert manifest platforms match requested
+│       └── *_test.go
 └── .github/
     └── workflows/
-        ├── ci.yml                  # Run shellcheck + bats on every PR
+        ├── ci.yml                  # golangci-lint + go test on every PR
         └── release.yml             # Tag-triggered release (auto-move major tag)
 ```
 
@@ -109,43 +136,57 @@ ekko-github-action/
 
 ### Steps (composite)
 
-1. **generate-tags** — run `scripts/generate-tags.sh`, sets `tag`, `push`, `tag_list` step outputs
-2. **docker-login** — `docker/login-action` with Docker Hub creds
-3. **docker-setup-buildx** — `docker/setup-buildx-action`
-4. **docker-build-push** — `docker/build-push-action` using outputs from step 1
-5. **update-gitops** — run `scripts/update-gitops.sh` (skipped if `push` output is `false`)
+1. **setup-go** — `actions/setup-go` with `go-version-file: ${{ github.action_path }}/go.mod` and module/build caching
+2. **generate-tags** — `go run ./cmd/ekko-action generate-tags` (from action path), sets `tag`, `push`, `tag_list` step outputs
+3. **docker-login** — `docker/login-action` with Docker Hub creds
+4. **docker-setup-buildx** — `docker/setup-buildx-action`
+5. **docker-build-push** — `docker/build-push-action` using outputs from step 2
+6. **update-gitops** — `go run ./cmd/ekko-action update-gitops` (skipped if `push` output is `false`)
 
 ---
 
-## Script Design
+## Go Design
 
-### `lib/common.sh`
-- `require_env VAR` — exit 1 with message if env var unset/empty
-- `log_info MSG` — prefixed stdout line
-- `log_error MSG` — prefixed stderr line
-- `set_output KEY VALUE` — writes to `$GITHUB_OUTPUT`
+### `cmd/ekko-action`
 
-### `lib/gitops-functions.sh`
-- `clone_repo ORG REPO TOKEN` — shallow clone via HTTPS with token, returns path
-- `update_file FILE IMAGE` — use `yq` to update `.spec.template.spec.containers[].image` (or a configurable yq expression)
-- `process_file_updates FILE_LIST PUSH` — iterate paths, call `update_file`, commit, optionally push
+Single binary, stdlib subcommand dispatch (no cobra — keep the dependency
+tree small). Each subcommand reads its configuration from `INPUT_*` /
+`GITHUB_*` env vars, exactly like the bash version, so `action.yml` wiring
+stays identical to a script-based composite action.
 
-### `scripts/generate-tags.sh`
-Reads `GITHUB_REF`, `GITHUB_SHA`, `INPUT_DOCKER_IMAGE`, `INPUT_DOCKER_CUSTOM_TAG`.
-Writes to `$GITHUB_OUTPUT`: `tag`, `push`, `tag_list`, `latest`.
+### `internal/ghaction`
 
-### `scripts/update-gitops.sh`
-Reads all `INPUT_GITOPS_*` and `INPUT_DOCKER_*` env vars.
-Routes to dev/stage/prod based on `GITHUB_REF`.
-Clones the gitops repo, patches files with `yq`, commits as the bot, pushes.
+Thin layer over the Actions runtime contract (either hand-rolled or
+`sethvargo/go-githubactions`):
+- `Input(name string) string` / `RequireInput(name string) (string, error)` — read `INPUT_<NAME>` env vars
+- `SetOutput(key, value string)` — append to `$GITHUB_OUTPUT`
+- `Infof` / `Errorf` — workflow-command-formatted logging (`::error::` etc.)
 
-### `scripts/retag-image.sh`
-Pulls an existing image by digest, tags it with a new tag, and pushes without
-rebuilding. Used for promoting a dev image to prod.
+### `internal/tags`
 
-### `scripts/verify-architecture.sh`
-Pulls the image manifest and asserts that the listed platforms match
-`INPUT_DOCKER_BUILD_PLATFORMS`. Fails the action if there is a mismatch.
+Pure function: `Generate(ref, sha, customTag string) (Result, error)` where
+`Result{Tag, Push, TagList, Latest}`. No I/O — fully unit-testable against
+the routing table above.
+
+### `internal/gitops`
+
+- `Clone(org, repo, token string) (dir string, err error)` — shallow clone
+  via `os/exec` git; token passed with `-c http.extraheader=AUTHORIZATION: ...`
+  (never embedded in the remote URL, so it can't leak into `.git/config` or logs)
+- `PatchImage(file, image string) error` — decode into `yaml.Node`
+  (gopkg.in/yaml.v3), update `.spec.template.spec.containers[].image`,
+  re-encode. Node-level editing preserves comments, ordering, and formatting —
+  the reason to avoid naive unmarshal/marshal
+- `ProcessUpdates(dir string, files []string, image string, push bool) error` —
+  patch each file, commit as the bot identity, push unless dry-run
+
+### `internal/registry`
+
+Built on `github.com/google/go-containerregistry`:
+- `Retag(src, dst, user, pass string) error` — `crane.Copy` server-side,
+  promotes a dev image to prod without pulling layers
+- `VerifyPlatforms(image string, want []string) error` — fetch the manifest
+  list, compare platform set against `docker-build-platforms`, error on mismatch
 
 ---
 
@@ -153,9 +194,10 @@ Pulls the image manifest and asserts that the listed platforms match
 
 | Tool | Purpose |
 |---|---|
-| [shellcheck](https://github.com/koalaman/shellcheck) | Static analysis for all shell scripts |
-| [bats-core](https://github.com/bats-core/bats-core) | Unit tests for shell scripts |
-| [yq](https://github.com/mikefarah/yq) | YAML patching in update-gitops.sh |
+| [Go](https://go.dev/) (1.24+) | Implementation language, `go test` for units |
+| [golangci-lint](https://golangci-lint.run/) | Linting (replaces shellcheck) |
+| [gopkg.in/yaml.v3](https://pkg.go.dev/gopkg.in/yaml.v3) | Comment-preserving YAML patching (replaces yq) |
+| [go-containerregistry](https://github.com/google/go-containerregistry) | Registry API: retag + manifest inspection |
 | [mise](https://mise.jdx.dev/) | Pin tool versions locally and in CI |
 
 ---
@@ -163,9 +205,10 @@ Pulls the image manifest and asserts that the listed platforms match
 ## CI / Release Workflows
 
 ### `ci.yml` (on pull_request + push to master/dev)
-1. Install tools via `mise`
-2. Run `shellcheck` on all `.sh` files
-3. Run `bats tests/`
+1. Install tools via `mise` (or `actions/setup-go` + golangci-lint action)
+2. `golangci-lint run`
+3. `go test ./...`
+4. `go build ./...` (catches compile errors in untested paths)
 
 ### `release.yml` (on `push` to tags `v*`)
 1. Move the major version tag (e.g. `v1`) to point at the new release
@@ -196,7 +239,9 @@ Pulls the image manifest and asserts that the listed platforms match
 
 ## Out of Scope (for now)
 
+- Precompiled release binaries downloaded by the action (skip `setup-go` +
+  compile at runtime) — revisit if action startup time becomes a problem
 - Multi-registry support (beyond Docker Hub)
 - Upwind / SLSA provenance attestations
 - Automatic PR creation in the gitops repo (direct push only)
-- Helm chart value patching (only raw YAML via yq)
+- Helm chart value patching (only container image fields in raw manifests)

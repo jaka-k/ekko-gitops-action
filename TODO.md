@@ -6,77 +6,95 @@ Tasks are ordered by dependency — complete each phase before starting the next
 
 ## Phase 1 — Scaffolding
 
-- [ ] Create `.gitignore` (node_modules, .env, *.swp)
-- [ ] Create `.editorconfig` (2-space indent, LF line endings)
-- [ ] Create `.shellcheckrc` (`shell=bash`, `external-sources=true`)
-- [ ] Create `mise.toml` pinning shellcheck, bats, yq versions
-- [ ] Create empty `scripts/lib/` directory with a `.gitkeep` (or first lib file)
-- [ ] Create empty `tests/lib/` directory
+- [ ] `go mod init` (module path matching the GitHub repo)
+- [ ] Create `.gitignore` (binaries, .env, *.swp, coverage output)
+- [ ] Create `.editorconfig` (tabs for .go per gofmt, LF line endings)
+- [ ] Create `.golangci.yml` (enable errcheck, govet, staticcheck, revive)
+- [ ] Create `mise.toml` pinning go and golangci-lint versions
+- [ ] Create `cmd/ekko-action/main.go` with subcommand dispatch skeleton
+      (`generate-tags`, `update-gitops`, `retag-image`, `verify-architecture`)
 
 ---
 
-## Phase 2 — Core Library
+## Phase 2 — Core Packages
 
-- [ ] Write `scripts/lib/common.sh`
-  - [ ] `require_env VAR` — exits with error if var is unset or empty
-  - [ ] `log_info MSG` — `[INFO] MSG` to stdout
-  - [ ] `log_error MSG` — `[ERROR] MSG` to stderr
-  - [ ] `set_output KEY VALUE` — appends `KEY=VALUE` to `$GITHUB_OUTPUT`
-- [ ] Write `scripts/lib/gitops-functions.sh`
-  - [ ] `clone_repo ORG REPO TOKEN` — shallow HTTPS clone authenticated with token
-  - [ ] `update_file FILE IMAGE` — use `yq` to patch container image reference
-  - [ ] `process_file_updates FILE_LIST PUSH` — loop files, update, commit, conditionally push
-- [ ] Write `tests/lib/common.bats` — unit tests for common.sh helpers
-
----
-
-## Phase 3 — Scripts
-
-- [ ] Write `scripts/generate-tags.sh`
-  - [ ] Handle `INPUT_DOCKER_CUSTOM_TAG` (highest priority)
+- [ ] Write `internal/ghaction`
+  - [ ] `Input(name)` / `RequireInput(name)` — read `INPUT_<NAME>` env vars
+        (uppercase, `-` → `_`), error if required and empty
+  - [ ] `SetOutput(key, value)` — append `KEY=VALUE` to `$GITHUB_OUTPUT`
+        (heredoc syntax for multiline values)
+  - [ ] `Infof` / `Errorf` — workflow-command logging (`::error::` etc.)
+  - [ ] Unit tests with `t.Setenv` and temp `GITHUB_OUTPUT` files
+- [ ] Write `internal/tags`
+  - [ ] `Generate(ref, sha, customTag) (Result, error)` — pure, no I/O
+  - [ ] Handle custom tag (highest priority)
   - [ ] Handle `refs/tags/v*` → version tag, push=true
   - [ ] Handle `refs/heads/main` / `master` → `main-<short-sha>`, push=true
   - [ ] Handle `refs/heads/dev` → `dev-<short-sha>`, push=true
   - [ ] Handle all other refs → `<short-sha>`, push=false
-  - [ ] Output: `tag`, `push`, `tag_list`, `latest`
-- [ ] Write `tests/generate-tags.bats` — test all ref/tag scenarios
-- [ ] Write `scripts/update-gitops.sh`
-  - [ ] Validate all required env vars via `require_env`
-  - [ ] Route to dev / stage / prod / dry-run based on `GITHUB_REF`
-  - [ ] Call `process_file_updates` with correct file list and push flag
-- [ ] Write `tests/update-gitops.bats` — test routing logic with mocked git
-- [ ] Write `scripts/retag-image.sh`
-  - [ ] Pull image by digest, apply new tag, push to Docker Hub
-- [ ] Write `scripts/verify-architecture.sh`
-  - [ ] Inspect pushed manifest, assert platforms match `INPUT_DOCKER_BUILD_PLATFORMS`
+  - [ ] Table-driven tests covering every ref/tag scenario
 
 ---
 
-## Phase 4 — action.yml
+## Phase 3 — GitOps Package
 
-- [ ] Define composite action metadata (name, description, author, branding)
-- [ ] Declare all inputs with descriptions and defaults (see PLAN.md)
-- [ ] Declare outputs (`docker-tag`, `docker-digest`)
-- [ ] Add step: run `scripts/generate-tags.sh` (shell: bash)
-- [ ] Add step: `docker/login-action` with Docker Hub creds
-- [ ] Add step: `docker/setup-buildx-action`
-- [ ] Add step: `docker/build-push-action` wired to generate-tags outputs
-- [ ] Add step: run `scripts/update-gitops.sh` with `if: steps.tags.outputs.push == 'true'`
-- [ ] Pin all third-party actions to full commit SHAs
+- [ ] Write `internal/gitops/clone.go`
+  - [ ] Shallow clone via `os/exec` git into a temp dir
+  - [ ] Auth via `-c http.extraheader` (token must never appear in remote URL or logs)
+- [ ] Write `internal/gitops/patch.go`
+  - [ ] Decode manifest into `yaml.Node` (gopkg.in/yaml.v3)
+  - [ ] Update `.spec.template.spec.containers[].image`, preserve comments/formatting
+  - [ ] Error clearly if the path doesn't exist in the document
+  - [ ] Tests: golden-file comparison including comment preservation
+- [ ] Write `internal/gitops/gitops.go`
+  - [ ] Route to dev / stage / prod / dry-run file list based on `GITHUB_REF`
+  - [ ] Patch each file, commit as bot identity, push unless dry-run
+  - [ ] Integration test against a local bare git repo (no network)
 
 ---
 
-## Phase 5 — CI Workflow
+## Phase 4 — Registry Package
+
+- [ ] Write `internal/registry/retag.go`
+  - [ ] `crane.Copy` src→dst with Docker Hub auth (no image pull)
+- [ ] Write `internal/registry/verify.go`
+  - [ ] Fetch manifest list, assert platforms match `docker-build-platforms`
+  - [ ] Tests against `go-containerregistry`'s in-memory registry (`registry.New()`)
+
+---
+
+## Phase 5 — Subcommands + action.yml
+
+- [ ] Wire subcommands in `cmd/ekko-action` to the internal packages
+  - [ ] `generate-tags` — outputs `tag`, `push`, `tag_list`, `latest`
+  - [ ] `update-gitops` — validates required inputs, runs the gitops flow
+  - [ ] `retag-image`, `verify-architecture`
+- [ ] Write `action.yml`
+  - [ ] Metadata (name, description, author, branding)
+  - [ ] All inputs with descriptions and defaults (see PLAN.md)
+  - [ ] Outputs (`docker-tag`, `docker-digest`)
+  - [ ] Step: `actions/setup-go` with `go-version-file` + cache pointing at `${{ github.action_path }}`
+  - [ ] Step: `go run ./cmd/ekko-action generate-tags` (working-directory: action path)
+  - [ ] Step: `docker/login-action` with Docker Hub creds
+  - [ ] Step: `docker/setup-buildx-action`
+  - [ ] Step: `docker/build-push-action` wired to generate-tags outputs
+  - [ ] Step: `go run ./cmd/ekko-action update-gitops` with `if: steps.tags.outputs.push == 'true'`
+  - [ ] Pin all third-party actions to full commit SHAs
+
+---
+
+## Phase 6 — CI Workflow
 
 - [ ] Create `.github/workflows/ci.yml`
   - [ ] Trigger on `pull_request` and `push` to `master`/`dev`
-  - [ ] Job: install tools with `mise install`
-  - [ ] Job step: `shellcheck scripts/**/*.sh`
-  - [ ] Job step: `bats tests/`
+  - [ ] `actions/setup-go` with caching
+  - [ ] `golangci-lint run`
+  - [ ] `go test ./...`
+  - [ ] `go build ./...`
 
 ---
 
-## Phase 6 — Release Workflow
+## Phase 7 — Release Workflow
 
 - [ ] Create `.github/workflows/release.yml`
   - [ ] Trigger on `push` to tags matching `v*`
@@ -85,7 +103,7 @@ Tasks are ordered by dependency — complete each phase before starting the next
 
 ---
 
-## Phase 7 — Documentation
+## Phase 8 — Documentation
 
 - [ ] Update `README.md`
   - [ ] Add badges (CI status, license)
@@ -93,17 +111,20 @@ Tasks are ordered by dependency — complete each phase before starting the next
   - [ ] Document all inputs and outputs in a table
   - [ ] Add usage example workflow snippet
   - [ ] Add branch → environment routing table
-  - [ ] Add contributing / local dev section (mise, shellcheck, bats)
+  - [ ] Add contributing / local dev section (mise, golangci-lint, go test)
 - [ ] Add `LICENSE` file (choose license — Apache-2.0 recommended)
 - [ ] Add `CONTRIBUTING.md` with local dev setup instructions
 
 ---
 
-## Phase 8 — End-to-End Validation
+## Phase 9 — End-to-End Validation
 
 - [ ] Create a test repository with a dummy `deployment.yaml` manifest
 - [ ] Wire a test caller workflow against the action
+- [ ] Measure action startup overhead (setup-go + go run) on cold and warm cache;
+      if unacceptable, revisit precompiled release binaries
 - [ ] Verify dev push updates the dev manifest file
 - [ ] Verify master push updates the stage manifest file
 - [ ] Verify tag push updates the prod manifest file and produces correct docker-digest output
 - [ ] Confirm commits are authored as `ekko-github-bot[bot]`
+- [ ] Confirm the gitops token never appears in workflow logs

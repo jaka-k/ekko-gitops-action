@@ -1,6 +1,6 @@
 # ekko-github-action
 
 ```bash
-    git config user.name "ekko-github-bot[bot]"
-    git config user.email "ekko-github-bot[bot]@://github.com"
+    git config user.name "ekko-github[bot]"
+    git config user.email "ekko-github[bot]@://github.com"
 ```
