@@ -1,10 +1,10 @@
-# PLAN: ekko-github-action
+# PLAN: ekko-gitops-action
 
 ## Overview
 
-A GitHub Action that builds and pushes Docker images to Docker Hub and updates
-manifest files in a separate GitOps repository to trigger Kubernetes
-deployments. Modeled on [staffbase/gitops-github-action](https://github.com/staffbase/gitops-github-action)
+A GitHub Action that builds and pushes Docker images to the GitHub Container
+Registry (ghcr.io) and updates manifest files in a separate GitOps repository
+to trigger Kubernetes deployments. Modeled on [staffbase/gitops-github-action](https://github.com/staffbase/gitops-github-action)
 (bash), but implemented in **Go**.
 
 The action is operated by `ekko-github-bot[bot]` for all Git operations.
@@ -61,7 +61,7 @@ module path.
 ## File Structure
 
 ```
-ekko-github-action/
+ekko-gitops-action/
 ├── action.yml                      # Composite action definition
 ├── README.md                       # Usage docs + examples
 ├── .gitignore
@@ -105,9 +105,10 @@ ekko-github-action/
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `docker-username` | yes | — | Docker Hub username |
-| `docker-password` | yes | — | Docker Hub access token |
-| `docker-image` | yes | — | Image name, e.g. `myorg/myapp` |
+| `docker-registry` | no | `ghcr.io` | Container registry host |
+| `docker-username` | no | `${{ github.actor }}` | Registry username |
+| `docker-password` | no | `${{ github.token }}` | Registry token — the default `GITHUB_TOKEN` works for ghcr.io when the caller grants `packages: write` |
+| `docker-image` | no | `ghcr.io/${{ github.repository }}` | Fully qualified image name (ghcr requires lowercase) |
 | `docker-file` | no | `./Dockerfile` | Path to Dockerfile |
 | `docker-custom-tag` | no | — | Override generated tag |
 | `docker-build-args` | no | — | Newline-separated build args |
@@ -138,7 +139,7 @@ ekko-github-action/
 
 1. **setup-go** — `actions/setup-go` with `go-version-file: ${{ github.action_path }}/go.mod` and module/build caching
 2. **generate-tags** — `go run ./cmd/ekko-action generate-tags` (from action path), sets `tag`, `push`, `tag_list` step outputs
-3. **docker-login** — `docker/login-action` with Docker Hub creds
+3. **docker-login** — `docker/login-action` with `registry: ghcr.io` and the token from inputs
 4. **docker-setup-buildx** — `docker/setup-buildx-action`
 5. **docker-build-push** — `docker/build-push-action` using outputs from step 2
 6. **update-gitops** — `go run ./cmd/ekko-action update-gitops` (skipped if `push` output is `false`)
@@ -182,7 +183,10 @@ the routing table above.
 
 ### `internal/registry`
 
-Built on `github.com/google/go-containerregistry`:
+Built on `github.com/google/go-containerregistry`. References must be fully
+qualified (`ghcr.io/...`) — the library defaults bare names to Docker Hub.
+For auth against ghcr.io, `authn.FromConfig` with any username and the
+`GITHUB_TOKEN` (or a PAT with `packages` scope) as password is sufficient:
 - `Retag(src, dst, user, pass string) error` — `crane.Copy` server-side,
   promotes a dev image to prod without pulling layers
 - `VerifyPlatforms(image string, want []string) error` — fetch the manifest
@@ -212,18 +216,20 @@ Built on `github.com/google/go-containerregistry`:
 
 ### `release.yml` (on `push` to tags `v*`)
 1. Move the major version tag (e.g. `v1`) to point at the new release
-   so callers using `uses: org/ekko-github-action@v1` get the latest patch.
+   so callers using `uses: org/ekko-gitops-action@v1` get the latest patch.
 
 ---
 
 ## Usage Example (caller workflow)
 
 ```yaml
-- uses: your-org/ekko-github-action@v1
+permissions:
+  contents: read
+  packages: write   # lets GITHUB_TOKEN push to ghcr.io
+
+- uses: your-org/ekko-gitops-action@v1
   with:
-    docker-username: ${{ secrets.DOCKERHUB_USERNAME }}
-    docker-password: ${{ secrets.DOCKERHUB_TOKEN }}
-    docker-image: myorg/myservice
+    docker-image: ghcr.io/myorg/myservice   # optional, this is the default
     gitops-token: ${{ secrets.GITOPS_TOKEN }}
     gitops-organization: myorg
     gitops-repository: k8s-manifests
@@ -241,7 +247,8 @@ Built on `github.com/google/go-containerregistry`:
 
 - Precompiled release binaries downloaded by the action (skip `setup-go` +
   compile at runtime) — revisit if action startup time becomes a problem
-- Multi-registry support (beyond Docker Hub)
+- Multi-registry support (beyond ghcr.io — `docker-registry` input exists but
+  only ghcr.io is tested/supported for now)
 - Upwind / SLSA provenance attestations
 - Automatic PR creation in the gitops repo (direct push only)
 - Helm chart value patching (only container image fields in raw manifests)

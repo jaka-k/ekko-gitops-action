@@ -1,0 +1,13 @@
+name: 'Ekko Gitops Action'
+description: 'A specialized gitops action to build images and update manifests in @jaka-k/ekko'
+author: 'Jaka Krajnc <444.ous@gmail.com>'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v2
+      with:
+        go-version: '1.26.6'
+
+    - run: go run ./cmd/main.go
+      shell: bash

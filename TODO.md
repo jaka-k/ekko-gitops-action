@@ -1,4 +1,4 @@
-# TODO: ekko-github-action
+# TODO: ekko-gitops-action
 
 Tasks are ordered by dependency — complete each phase before starting the next.
 
@@ -56,7 +56,7 @@ Tasks are ordered by dependency — complete each phase before starting the next
 ## Phase 4 — Registry Package
 
 - [ ] Write `internal/registry/retag.go`
-  - [ ] `crane.Copy` src→dst with Docker Hub auth (no image pull)
+  - [ ] `crane.Copy` src→dst with ghcr.io auth via `GITHUB_TOKEN` (no image pull)
 - [ ] Write `internal/registry/verify.go`
   - [ ] Fetch manifest list, assert platforms match `docker-build-platforms`
   - [ ] Tests against `go-containerregistry`'s in-memory registry (`registry.New()`)
@@ -75,7 +75,7 @@ Tasks are ordered by dependency — complete each phase before starting the next
   - [ ] Outputs (`docker-tag`, `docker-digest`)
   - [ ] Step: `actions/setup-go` with `go-version-file` + cache pointing at `${{ github.action_path }}`
   - [ ] Step: `go run ./cmd/ekko-action generate-tags` (working-directory: action path)
-  - [ ] Step: `docker/login-action` with Docker Hub creds
+  - [ ] Step: `docker/login-action` with `registry: ghcr.io`, defaulting to `github.actor` / `github.token`
   - [ ] Step: `docker/setup-buildx-action`
   - [ ] Step: `docker/build-push-action` wired to generate-tags outputs
   - [ ] Step: `go run ./cmd/ekko-action update-gitops` with `if: steps.tags.outputs.push == 'true'`
@@ -128,3 +128,7 @@ Tasks are ordered by dependency — complete each phase before starting the next
 - [ ] Verify tag push updates the prod manifest file and produces correct docker-digest output
 - [ ] Confirm commits are authored as `ekko-github-bot[bot]`
 - [ ] Confirm the gitops token never appears in workflow logs
+- [ ] Confirm `GITHUB_TOKEN` with `packages: write` can push to ghcr.io from a
+      caller repo (first push creates the package; check org package settings
+      and that the package is linked to the repo)
+- [ ] Confirm image names are lowercased (ghcr rejects uppercase; `github.repository` can contain uppercase)

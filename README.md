@@ -1,4 +1,4 @@
-# ekko-github-action
+# ekko-gitops-action
 
 ```bash
     git config user.name "ekko-github[bot]"
