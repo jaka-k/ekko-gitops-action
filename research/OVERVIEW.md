@@ -219,7 +219,7 @@ separate-repo commit.
 
 ---
 
-## Key Takeaways for ekko-github-action
+## Key Takeaways for ekko-gitops-action
 
 1. **Direct push vs. PR gate.** Staffbase (and most low-star actions) push directly to the
    GitOps repo. The more popular and mature approaches (`peter-evans`, `quipper`) require PR
