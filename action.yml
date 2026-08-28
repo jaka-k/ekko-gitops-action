@@ -4,11 +4,15 @@ author: 'Jaka Krajnc <444.ous@gmail.com>'
 inputs:
   command:
     required: false
-    description: 'Subcommand to run (dump-context, dump-registry, generate-tags, update-gitops, retag-image, verify-architecture)'
-    default: 'dump-context'
+    description: 'Subcommand to run (generate-images, generate-preview, retag-image, verify-architecture)'
+    default: 'generate-images'
   image:
     required: false
     description: 'Container image reference to inspect/retag (defaults to ghcr.io/<repository>)'
+    default: ''
+  service:
+    required: false
+    description: 'Service name in a monorepo; becomes an extra path segment (ghcr.io/<repository>/<service>). Leave empty for single-image repos.'
     default: ''
   ekkoRepository:
     required: false
@@ -21,6 +25,11 @@ inputs:
     required: false
     description: 'GitHub Package Registry Token for Authorization'
     default: ${{ github.token }}
+outputs:
+  docker-tag:
+    description: 'Generated image tag, e.g. 1667813-dev'
+  docker-image:
+    description: 'Full image reference, e.g. ghcr.io/owner/repo/service:1667813'
 runs:
   using: node24
   main: invoke-binary.js
