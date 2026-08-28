@@ -32,4 +32,5 @@ jobs:
           git add -f bin invoke-binary.js
           git commit -m "build: binaries for ${GITHUB_REF_NAME}"
           git tag -f "${GITHUB_REF_NAME}"
-          git push origin "refs/tags/${GITHUB_REF_NAME}" --force
+          git tag -f v0
+          git push origin "refs/tags/${GITHUB_REF_NAME}" "refs/tags/v0" --force
