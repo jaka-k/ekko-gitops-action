@@ -10,7 +10,7 @@ on:
 
 env:
   # Floating major tag consumers pin to (uses: ...@v0). Bump on breaking changes.
-  MAJOR_VERSION: v0
+  MAJOR_VERSION: 0
 
 permissions:
   contents: write
@@ -36,5 +36,5 @@ jobs:
           git add -f bin invoke-binary.js
           git commit -m "build: binaries for ${GITHUB_REF_NAME}"
           git tag -f "${GITHUB_REF_NAME}"
-          git tag -f "${MAJOR_VERSION}"
-          git push origin "refs/tags/${GITHUB_REF_NAME}" "refs/tags/${MAJOR_VERSION}" --force
+          git tag -f "v${MAJOR_VERSION}"
+          git push origin "refs/tags/${GITHUB_REF_NAME}" "refs/tags/v${MAJOR_VERSION}" --force
