@@ -6,3 +6,5 @@ var user = "ekko-github[bot]"
 var mail = "285673000+ekko-github[bot]@users.noreply.github.com"
 
 // FLUXCD
+// The question of which method to use to update the yaml file, sb uses YQ
+// And how does  the namespace get fed into the action?

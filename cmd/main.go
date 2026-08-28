@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-github/v90/github"
+	"github.com/jaka-k/ekko-gitops-action/lib"
 	"github.com/sethvargo/go-githubactions"
 )
 
@@ -21,6 +23,7 @@ type runFunc func(ctx context.Context, a *githubactions.Action) error
 
 var commands = map[string]runFunc{
 	"dump-context":        dumpContext,
+	"dump-registry":       dumpRegistry,
 	"generate-tags":       generateTags,
 	"update-gitops":       updateGitops,
 	"retag-image":         retagImage,
@@ -142,7 +145,95 @@ func dumpContext(ctx context.Context, a *githubactions.Action) error {
 	}
 	a.EndGroup()
 
-	a.SetOutput("run-url", fmt.Sprintf("%s/%s/actions/runs/%d", gctx.ServerURL, gctx.Repository, gctx.RunID))
+	setOutput(a, "run-url", fmt.Sprintf("%s/%s/actions/runs/%d", gctx.ServerURL, gctx.Repository, gctx.RunID))
+	return nil
+}
+
+// dumpRegistry is the registry twin of dumpContext: it walks through the
+// go-containerregistry APIs from lib/registry.go against GHCR, read-only.
+func dumpRegistry(ctx context.Context, a *githubactions.Action) error {
+	// pkg/name needs no network or auth — pure reference parsing.
+	a.Group("pkg/name — lib.BuildReferences()")
+	if err := lib.BuildReferences(); err != nil {
+		return err
+	}
+	a.EndGroup()
+
+	// Image to inspect: explicit input, or the repo's own GHCR package.
+	// GHCR paths must be lowercase, unlike GITHUB_REPOSITORY.
+	image := a.GetInput("image")
+	if image == "" {
+		gctx, err := a.Context()
+		if err != nil {
+			return err
+		}
+		image = "ghcr.io/" + strings.ToLower(gctx.Repository)
+	}
+
+	// authn: static creds from the input; empty creds behave as anonymous,
+	// which is enough for public images.
+	token := a.GetInput("ghcrToken")
+	if token == "" {
+		a.Warningf("no ghcrToken input set, using anonymous auth (public images only)")
+	} else {
+		a.AddMask(token)
+	}
+	auth := lib.RegistryAuth(a.Getenv("GITHUB_ACTOR"), token)
+
+	a.Group(fmt.Sprintf("pkg/crane — %s", image))
+	digest, err := lib.GetDigest(image, auth)
+	if err != nil {
+		a.Errorf("crane.Digest: %v (does the package exist and can this token read it?)", err)
+		a.EndGroup()
+		return nil // the remaining calls would fail the same way
+	}
+	fmt.Println("crane.Digest:", digest)
+
+	desc, err := lib.HeadImage(image, auth)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("crane.Head: mediaType=%s size=%d bytes (index=%t)\n",
+		desc.MediaType, desc.Size, desc.MediaType.IsIndex())
+
+	manifest, err := lib.RawManifest(image, auth)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("crane.Manifest: %d bytes of raw JSON\n", len(manifest))
+
+	// ListTags wants the repository, not a tagged reference — name.ParseReference
+	// splits the two (Context() = repo, Identifier() = tag/digest).
+	ref, err := name.ParseReference(image)
+	if err != nil {
+		return err
+	}
+	tags, err := lib.ListTags(ref.Context().Name(), auth)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("crane.ListTags(%s): %d tags, e.g. %s\n",
+		ref.Context().Name(), len(tags), strings.Join(firstN(tags, 8), ", "))
+	a.EndGroup()
+
+	a.Group("pkg/v1/remote — lib.ImagePlatforms()")
+	platforms, err := lib.ImagePlatforms(ctx, image, auth)
+	if err != nil {
+		return err
+	}
+	fmt.Println("platforms:", strings.Join(platforms, ", "))
+	a.EndGroup()
+
+	// pkg/registry: a real in-memory registry, the base for future unit tests.
+	a.Group("pkg/registry — lib.NewTestRegistry()")
+	srv, err := lib.NewTestRegistry()
+	if err != nil {
+		return err
+	}
+	srv.Close()
+	a.EndGroup()
+
+	setOutput(a, "docker-digest", digest)
 	return nil
 }
 
@@ -152,6 +243,20 @@ func updateGitops(ctx context.Context, a *githubactions.Action) error {
 
 func names(m map[string]runFunc) string {
 	return strings.Join(slices.Sorted(maps.Keys(m)), ", ")
+}
+
+func firstN(s []string, n int) []string {
+	return s[:min(n, len(s))]
+}
+
+// setOutput guards Action.SetOutput for local runs: the SDK panics when
+// $GITHUB_OUTPUT is unset, which is only ever the case off-runner.
+func setOutput(a *githubactions.Action, k, v string) {
+	if a.Getenv("GITHUB_OUTPUT") == "" {
+		a.Infof("(local run) skipping output %s=%s", k, v)
+		return
+	}
+	a.SetOutput(k, v)
 }
 
 func retagImage(ctx context.Context, a *githubactions.Action) error {
