@@ -1,0 +1,35 @@
+name: Release
+
+# Push a source-only tag (e.g. v1.2.0) and this workflow rebuilds it as a tag
+# whose commit contains the platform binaries invoke-binary.js dispatches to.
+# The tag push it performs uses GITHUB_TOKEN, which never triggers workflows,
+# so it cannot recurse.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binaries
+        run: ./scripts/build.sh
+
+      - name: Commit binaries and move tag
+        run: |
+          git config user.name "ekko-github[bot]"
+          git config user.email "285673000+ekko-github[bot]@users.noreply.github.com"
+          git add -f bin invoke-binary.js
+          git commit -m "build: binaries for ${GITHUB_REF_NAME}"
+          git tag -f "${GITHUB_REF_NAME}"
+          git push origin "refs/tags/${GITHUB_REF_NAME}" --force

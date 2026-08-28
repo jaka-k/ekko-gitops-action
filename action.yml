@@ -2,6 +2,10 @@ name: 'Ekko Gitops Action'
 description: 'A specialized gitops action to build images and update manifests in @jaka-k/ekko'
 author: 'Jaka Krajnc <444.ous@gmail.com>'
 inputs:
+  command:
+    required: false
+    description: 'Subcommand to run (dump-context, generate-tags, update-gitops, retag-image, verify-architecture)'
+    default: 'dump-context'
   ekkoRepository:
     required: false
     description: 'FluxCD repository'
@@ -12,19 +16,7 @@ inputs:
   ghcrToken:
     required: false
     description: 'GitHub Package Registry Token for Authorization'
-    default: ${{ secrets.token }}
+    default: ${{ github.token }}
 runs:
-  using: composite
-  steps:
-    - uses: actions/setup-go@v5
-      with:
-        go-version-file: ${{ github.action_path }}/go.mod
-        cache-dependency-path: ${{ github.action_path }}/go.sum
-
-    - run: go run ./cmd generate-tags
-      shell: bash
-      working-directory: ${{ github.action_path }}
-      env:
-        INPUT_GHTOKEN: ${{ inputs.ghToken }}
-        INPUT_GHCRTOKEN: ${{ inputs.ghcrToken }}
-        INPUT_EKKOREPOSITORY: ${{ inputs.ekkoRepository }}
+  using: node24
+  main: invoke-binary.js

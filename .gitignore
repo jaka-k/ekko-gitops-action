@@ -1,1 +1,6 @@
 .idea/*
+
+# Platform binaries are built by the release workflow and only live in
+# release-tag commits, never on master. Use `git add -f` to override for
+# manual @master testing.
+bin/
