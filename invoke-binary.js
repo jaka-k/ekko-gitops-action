@@ -2,7 +2,7 @@ const childProcess = require('child_process')
 const os = require('os')
 const process = require('process')
 
-const VERSION = '67341bfaa441ed8a69657030837c2e73c8433736'
+const VERSION = 'fdf8d4cba5005ed9734c2370c2bcc517d7deb0c4'
 
 function chooseBinary() {
     const platform = os.platform()
@@ -19,12 +19,6 @@ function chooseBinary() {
     }
     if (platform === 'darwin' && arch === 'arm64') {
         return `main-darwin-arm64-${VERSION}`
-    }
-    if (platform === 'windows' && arch === 'x64') {
-        return `main-windows-amd64-${VERSION}`
-    }
-    if (platform === 'windows' && arch === 'arm64') {
-        return `main-windows-arm64-${VERSION}`
     }
 
     console.error(`Unsupported platform (${platform}) and architecture (${arch})`)
